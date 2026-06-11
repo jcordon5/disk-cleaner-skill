@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disk Cleaner</title>
+<style>
+  :root {
+    --bg:#0f1419; --panel:#171e26; --panel2:#1d2630; --line:#2a3543;
+    --text:#e6edf3; --muted:#8b98a5; --accent:#4cc2ff;
+    --safe:#3fb950; --redl:#58a6ff; --review:#d29922; --protected:#8b949e;
+    --danger:#f85149;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  header { padding:22px 28px; border-bottom:1px solid var(--line);
+    display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  h1 { font-size:20px; margin:0; font-weight:650; }
+  .sub { color:var(--muted); font-size:13px; }
+  .wrap { max-width:1100px; margin:0 auto; padding:24px 28px 60px; }
+  .grid { display:grid; gap:18px; }
+  .cards { grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:18px 20px; }
+  .card .label { color:var(--muted); font-size:12px; text-transform:uppercase;
+    letter-spacing:.04em; }
+  .card .big { font-size:28px; font-weight:680; margin-top:6px; }
+  .card .hint { color:var(--muted); font-size:12px; margin-top:4px; }
+  h2 { font-size:15px; text-transform:uppercase; letter-spacing:.05em;
+    color:var(--muted); margin:32px 0 12px; font-weight:600; }
+  /* disk bar */
+  .diskbar { height:30px; border-radius:8px; overflow:hidden; display:flex;
+    border:1px solid var(--line); background:var(--panel2); }
+  .diskbar > div { height:100%; }
+  .legend { display:flex; gap:18px; flex-wrap:wrap; margin-top:10px;
+    color:var(--muted); font-size:13px; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%;
+    margin-right:6px; vertical-align:middle; }
+  /* category rows */
+  .rows { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    overflow:hidden; }
+  .row { display:grid; grid-template-columns:170px 1fr 90px; gap:14px;
+    align-items:center; padding:12px 18px; border-top:1px solid var(--line); }
+  .row:first-child { border-top:none; }
+  .row .cat { font-weight:600; display:flex; align-items:center; gap:8px; }
+  .bar { height:14px; border-radius:7px; background:var(--panel2); overflow:hidden; }
+  .bar > div { height:100%; border-radius:7px; }
+  .amt { text-align:right; font-variant-numeric:tabular-nums; color:var(--muted); }
+  .pill { font-size:11px; padding:2px 8px; border-radius:20px; font-weight:600; }
+  .pill.safe{background:rgba(63,185,80,.15);color:var(--safe);}
+  .pill.safe_redownload{background:rgba(88,166,255,.15);color:var(--redl);}
+  .pill.review{background:rgba(210,153,34,.15);color:var(--review);}
+  .pill.protected{background:rgba(139,148,158,.15);color:var(--protected);}
+  /* consumers list */
+  .item { display:grid; grid-template-columns:1fr auto; gap:12px; padding:11px 18px;
+    border-top:1px solid var(--line); align-items:center; }
+  .item:first-child{border-top:none;}
+  .item .path { font-family:ui-monospace,Menlo,monospace; font-size:12.5px;
+    color:var(--muted); word-break:break-all; }
+  .item .name { font-weight:600; }
+  .item .sz { font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .muted{color:var(--muted);} .empty{color:var(--muted); padding:18px;}
+  .progress { height:10px; border-radius:6px; background:var(--panel2);
+    overflow:hidden; margin-top:8px; }
+  .progress>div { height:100%; background:var(--safe); width:0%; transition:width .3s; }
+  .banner { background:var(--panel2); border:1px solid var(--line); border-radius:10px;
+    padding:12px 16px; color:var(--muted); font-size:13px; margin-bottom:18px; }
+  .reload { color:var(--accent); cursor:pointer; }
+  footer { color:var(--muted); font-size:12px; text-align:center; padding:20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Disk Cleaner</h1>
+  <span class="sub" id="status">loading…</span>
+  <span class="sub" style="margin-left:auto" id="updated"></span>
+</header>
+<div class="wrap">
+  <div class="banner">
+    This dashboard is local-only — it runs on your machine, uses no internet, and
+    sends nothing anywhere. It auto-refreshes as the assistant scans and cleans.
+  </div>
+
+  <div class="grid cards" id="cards"></div>
+
+  <h2>Disk usage</h2>
+  <div class="diskbar" id="diskbar"></div>
+  <div class="legend" id="disklegend"></div>
+
+  <h2>Cleanup categories</h2>
+  <div class="rows" id="categories"><div class="empty">Run a scan to see categories.</div></div>
+
+  <h2>Biggest space consumers</h2>
+  <div class="rows" id="consumers"><div class="empty">Run a scan to see results.</div></div>
+
+  <div id="reportSection" style="display:none">
+    <h2>Cleanup report</h2>
+    <div class="rows" id="report"></div>
+  </div>
+</div>
+<footer>disk-cleaner • everything stays on this machine</footer>
+
+<script>
+const RISK_COLORS = { safe:"#3fb950", safe_redownload:"#58a6ff", review:"#d29922", protected:"#8b949e" };
+const RISK_LABEL = { safe:"Safe", safe_redownload:"Safe (may re-download)", review:"Review", protected:"Protected" };
+
+function human(n){
+  if(n==null) return "—";
+  const u=["B","KB","MB","GB","TB","PB"]; let x=n,i=0;
+  while(x>=1024 && i<u.length-1){x/=1024;i++;}
+  return (i===0? x.toFixed(0): x.toFixed(1))+" "+u[i];
+}
+async function getJSON(f){
+  // Standalone snapshot mode: data is embedded inline, no server needed.
+  if(window.EMBEDDED){ return window.EMBEDDED[f] ?? null; }
+  try{ const r=await fetch(f+"?t="+Date.now()); if(!r.ok) return null; return await r.json(); }catch(e){ return null; }
+}
+
+function card(label,big,hint,color){
+  return `<div class="card"><div class="label">${label}</div>
+    <div class="big" style="${color?`color:${color}`:''}">${big}</div>
+    ${hint?`<div class="hint">${hint}</div>`:''}</div>`;
+}
+
+async function render(){
+  const scan = await getJSON("scan.json");
+  const report = await getJSON("report.json");
+  const progress = await getJSON("progress.json");
+  const status = document.getElementById("status");
+
+  if(!scan){ status.textContent="waiting for first scan…"; return; }
+  status.textContent = "scanned "+(scan.stats?.dirs||0).toLocaleString()+" folders";
+  document.getElementById("updated").textContent = "updated "+ new Date(scan.generated_at).toLocaleTimeString();
+
+  const est = scan.summary.estimated_recoverable;
+  const cards = [
+    card("Disk free", human(scan.disk.free), "of "+human(scan.disk.total)+" total"),
+    card("Safe to clean", "~"+human(est.total_safe), "caches, temp, logs, builds", RISK_COLORS.safe),
+    card("Needs review", "~"+human(est.review), "you decide item by item", RISK_COLORS.review),
+  ];
+  if(report){
+    const got = report.dry_run ? report.estimated_freed : report.estimated_freed;
+    cards.push(card(report.dry_run?"Would recover":"Recovered",
+      "~"+human(got), report.cleaned_count+" item(s) cleaned", RISK_COLORS.safe));
+  }
+  document.getElementById("cards").innerHTML = cards.join("");
+
+  // disk bar: used vs free, with safe/review slices of used
+  const d = scan.disk;
+  const safeFrac = est.total_safe/d.total, revFrac=est.review/d.total;
+  const otherUsed = Math.max(0,(d.used - est.total_safe - est.review)/d.total);
+  const freeFrac = d.free/d.total;
+  const C_OTHER = "#3a4452", C_FREE = "#aeb8c4";
+  document.getElementById("diskbar").innerHTML =
+    `<div style="width:${(otherUsed*100).toFixed(2)}%;background:${C_OTHER}"></div>`+
+    `<div style="width:${(safeFrac*100).toFixed(2)}%;background:${RISK_COLORS.safe}"></div>`+
+    `<div style="width:${(revFrac*100).toFixed(2)}%;background:${RISK_COLORS.review}"></div>`+
+    `<div style="width:${(freeFrac*100).toFixed(2)}%;background:${C_FREE}"></div>`;
+  document.getElementById("disklegend").innerHTML =
+    `<span><span class="dot" style="background:${C_OTHER}"></span>Other used ${human(d.used-est.total_safe-est.review)}</span>`+
+    `<span><span class="dot" style="background:${RISK_COLORS.safe}"></span>Safe to clean ${human(est.total_safe)}</span>`+
+    `<span><span class="dot" style="background:${RISK_COLORS.review}"></span>Review ${human(est.review)}</span>`+
+    `<span><span class="dot" style="background:${C_FREE}"></span>Free ${human(d.free)}</span>`;
+
+  // categories
+  const bycat = scan.summary.by_category;
+  const cats = Object.entries(bycat).sort((a,b)=>b[1].size-a[1].size);
+  const maxc = cats.length? cats[0][1].size : 1;
+  document.getElementById("categories").innerHTML = cats.length? cats.map(([name,info])=>{
+    const item = (scan.candidates.find(c=>c.category===name)||{});
+    const risk = item.risk||"review";
+    return `<div class="row">
+      <div class="cat"><span class="pill ${risk}">${RISK_LABEL[risk]||risk}</span></div>
+      <div><div style="margin-bottom:4px">${name} <span class="muted">· ${info.count} item(s)</span></div>
+        <div class="bar"><div style="width:${(info.size/maxc*100).toFixed(1)}%;background:${RISK_COLORS[risk]}"></div></div></div>
+      <div class="amt">${human(info.size)}</div></div>`;
+  }).join("") : `<div class="empty">Nothing significant found.</div>`;
+
+  // consumers
+  const top = scan.summary.top_consumers||[];
+  document.getElementById("consumers").innerHTML = top.length? top.map(c=>`
+    <div class="item">
+      <div><div class="name">${c.name} <span class="pill ${c.risk}">${RISK_LABEL[c.risk]||c.risk}</span></div>
+        <div class="path">${c.path}</div></div>
+      <div class="sz">${human(c.size)}</div></div>`).join("") :
+    `<div class="empty">Nothing above the size threshold.</div>`;
+
+  // progress / report
+  if(progress && progress.total){
+    const pct = progress.total? (progress.completed/progress.total*100):0;
+    if(pct<100 && !progress.finished_at){
+      status.textContent = `cleaning ${progress.completed}/${progress.total}…`;
+    }
+  }
+  if(report){
+    document.getElementById("reportSection").style.display="block";
+    const cleaned = (report.cleaned||[]).slice().sort((a,b)=>b.freed-a.freed);
+    const head = `<div class="row"><div class="cat">${report.dry_run?'Dry run':'Done'}</div>
+      <div class="muted">Recovered ~${human(report.estimated_freed)} · ${report.cleaned_count} cleaned · ${report.skipped_count} skipped</div>
+      <div class="amt">${human(report.estimated_freed)}</div></div>`;
+    const rows = cleaned.slice(0,30).map(c=>`<div class="item">
+      <div><div class="name">${c.verb==='trash'?'→ Trash':'Deleted'} <span class="pill ${c.risk}">${c.category}</span></div>
+        <div class="path">${c.path}</div></div><div class="sz">${human(c.freed)}</div></div>`).join("");
+    const skipped = (report.skipped||[]).slice(0,20).map(c=>`<div class="item">
+      <div><div class="name muted">Skipped</div>
+        <div class="path">${c.path} — ${c.skipped_reason||''}</div></div><div class="sz muted">${human(c.size)}</div></div>`).join("");
+    document.getElementById("report").innerHTML = head+rows+skipped;
+  }
+}
+render();
+if(!window.EMBEDDED){ setInterval(render, 2500); }
+</script>
+</body>
+</html>

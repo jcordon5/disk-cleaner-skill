@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+
+# Tool state (machine-specific, never commit — may contain local paths)
+.disk-cleaner/
+
+# OS
+.DS_Store
