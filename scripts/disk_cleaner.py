@@ -196,21 +196,40 @@ def classify(path: str) -> tuple[str, str]:
         return "protected, not touched", "looks like a key / certificate / profile"
     if has(PROTECTED_SUBSTR) >= 0:
         return "protected, not touched", "sensitive credential or key store"
-    if has(CLOUD_SUBSTR) >= 0:
-        return "protected, not touched", "cloud-sync folder — deleting may remove from the cloud"
+    if has(CLOUD_SUBSTR) >= 0 or \
+       any(c in low for c in ("onedrive", "dropbox", "google drive", "pcloud",
+                              "/megasync", "tresorit", "/icloud")):
+        return "protected, not touched", "cloud-sync data — deleting may remove from the cloud or break sync"
     if has(PROTECTED_PERSONAL) >= 0:
         return "protected, not touched", "personal data (mail / photos / messages / history)"
     if has(PROTECTED_DOCS) >= 0:
         return "protected, not touched", "documents folder — your own files"
 
     # ---- Browser caches (safe) vs browser profiles (protected) --------------
-    # A profile dir holds cookies/logins/history (protected). Its Cache/Code Cache/
-    # GPUCache subdirs are safe to clear. Check the cache subdirs first (deeper).
-    if any(c in ("cache", "code cache", "gpucache", "cache_data", "cache2",
-                 "service worker") for c in comps) and \
+    # A profile dir holds cookies/logins/history (protected). Only the clearly
+    # cache-only subdirs are safe to clear. Note we deliberately do NOT match the
+    # whole "Service Worker" dir — it holds registrations and IndexedDB-backed
+    # offline state, not just cache; only its "CacheStorage" subdir is cache.
+    browser_cache_dirs = ("cache", "code cache", "gpucache", "cachestorage",
+                          "cache_data", "cache2", "dawncache",
+                          "graphitedawncache", "scriptcache")
+    if any(c in browser_cache_dirs for c in comps) and \
        any(b in low for b in ("chrome", "chromium", "firefox", "safari", "edge",
                               "brave", "vivaldi", "opera", "arc")):
         return "browser cache", "browser cache — rebuilds itself as you browse"
+
+    # ---- Toolchains / runtimes / environments (review, NOT auto-safe) -------
+    # These dirs install actual toolchains, SDKs, language runtimes, or virtual
+    # environments — not throwaway cache. Removing them can break a developer's
+    # setup, so they need explicit per-item review even though they're rebuildable.
+    toolchain_dirs = (".rustup", ".pyenv", ".rbenv", ".nvm", ".nodenv", ".sdkman",
+                      ".asdf", ".conda", "miniconda3", "anaconda3", "miniforge3",
+                      ".gem", ".rvm", "android-sdk", ".android", "flutter",
+                      ".volta", "virtualenvs", ".virtualenvs")
+    if any(c in toolchain_dirs for c in comps):
+        return ("review required",
+                "developer toolchain / runtime / environment — removing it can "
+                "break your setup; review before removing")
 
     # ---- Developer & package-manager caches (safe_redownload) ---------------
     dev_components = {
@@ -219,7 +238,6 @@ def classify(path: str) -> tuple[str, str]:
         ".gradle": "developer cache",
         ".m2": "package manager cache",
         ".cargo": "package manager cache",
-        ".rustup": "developer cache",
         ".npm": "package manager cache",
         ".yarn": "package manager cache",
         ".pnpm-store": "package manager cache",
@@ -522,8 +540,14 @@ def summarize(candidates: list, tree: list) -> dict:
 
 
 def cmd_scan(args) -> int:
-    roots = [os.path.realpath(os.path.expanduser(r)) for r in
-             (args.root or default_roots())]
+    if getattr(args, "demo", False):
+        demo_root = build_demo()
+        log(f"Demo mode: built a harmless fake home at {demo_root} (sparse files, "
+            f"no real disk used). Scanning it instead of your machine.")
+        roots = [demo_root]
+    else:
+        roots = [os.path.realpath(os.path.expanduser(r)) for r in
+                 (args.root or default_roots())]
     report_min = parse_size(args.min_size)
 
     disk = shutil.disk_usage(roots[0])
@@ -546,6 +570,10 @@ def cmd_scan(args) -> int:
     for t in trees:
         collect_candidates(t, candidates)
     candidates.sort(key=lambda c: -c["size"])
+    # Stable ids so the user/agent can approve units by id (dc_001…) rather than
+    # by re-typing or re-interpreting a path — less ambiguity, less room for error.
+    for i, c in enumerate(candidates, 1):
+        c["id"] = f"dc_{i:03d}"
 
     scan = {
         "version": 1,
@@ -660,9 +688,14 @@ def audit(record: dict) -> None:
         f.write(json.dumps(record) + "\n")
 
 
-def validate_target(path: str, expected_action: str) -> tuple[bool, str]:
+def validate_target(path: str, expected_action: str,
+                    allowed_roots: list[str] | None = None) -> tuple[bool, str]:
     """Independent re-validation at clean time. This is the last line of defence;
-    it does NOT trust the plan and re-derives everything from the path itself."""
+    it does NOT trust the plan and re-derives everything from the path itself.
+
+    `allowed_roots` are the roots the scan actually covered (e.g. an external
+    volume passed via --root); cleanup is permitted only inside one of them plus
+    the always-safe home/temp areas. All the other guardrails still apply."""
     real = os.path.realpath(path)
     home = os.path.realpath(os.path.expanduser("~"))
 
@@ -670,10 +703,12 @@ def validate_target(path: str, expected_action: str) -> tuple[bool, str]:
         return False, "no longer exists"
     if os.path.islink(path):
         return False, "is a symlink (refusing to follow)"
-    # must live under a safe root
+    # must live under a safe root: the always-allowed home/temp, plus any root the
+    # scan actually covered (so external volumes scanned with --root are cleanable).
     roots = [home] + [os.path.realpath(os.path.expanduser(r))
                       for r in (os.environ.get("TMPDIR", ""), "/tmp", "/var/tmp")
                       if r]
+    roots += [os.path.realpath(r) for r in (allowed_roots or [])]
     if not any(is_under(real, r) for r in roots):
         return False, "outside the scanned safe roots"
     # never the home dir, a top-level home child that is huge, or system roots
@@ -705,38 +740,58 @@ def cmd_clean(args) -> int:
         log("No plan found. Run `plan` first.")
         return 1
 
-    # Resolve which paths are approved. Approval comes from one of:
-    #   --path P (repeatable), --category C (repeatable), or --all-safe.
+    # Roots the scan actually covered, so cleanup can reach an external volume the
+    # user explicitly scanned with --root (validate_target still guards each item).
+    scan = load_json(state_path(SCAN_FILE)) or {}
+    allowed_roots = scan.get("roots", [])
+
+    # Resolve which units are approved. Approval is granular on purpose:
+    #   --id dc_003        a specific unit by its stable id (repeatable)
+    #   --path P           a specific unit by path (repeatable)
+    #   --category C       a whole category, e.g. "browser cache" (repeatable)
+    #   --safe-only        every pure-safe unit (temp/logs/app caches) — no rebuild cost
+    #   --rebuildable      every safe-but-rebuildable unit (package/build/browser/MODEL caches)
+    #   --all-safe         both of the above (kept for convenience)
+    # Pure-safe and rebuildable are deliberately separate: wiping AI models or a
+    # toolchain cache is "recoverable but annoying", not the same as clearing temp.
     approved: list[dict] = []
     cats = set(args.category or [])
+    ids = set(args.id or [])
     explicit = set(os.path.realpath(os.path.expanduser(p)) for p in (args.path or []))
     for g in plan["groups"]:
         if g["action"] == RISK_NONE:
             continue  # protected groups can never be approved
-        want_group = (args.all_safe and g["risk"] in ("safe", "safe_redownload")) \
+        want_group = (
+            (args.safe_only and g["risk"] == "safe")
+            or (args.rebuildable and g["risk"] == "safe_redownload")
+            or (args.all_safe and g["risk"] in ("safe", "safe_redownload"))
             or g["category"] in cats
+        )
         for item in g["items"]:
-            if want_group or os.path.realpath(item["path"]) in explicit:
+            if want_group or item.get("id") in ids \
+               or os.path.realpath(item["path"]) in explicit:
                 approved.append(item)
 
     if not approved:
-        log("Nothing approved. Use --category \"safe cache\", --path <dir>, or "
-            "--all-safe to approve cleanup units. (Protected items are never "
-            "eligible.)")
+        log("Nothing approved. Approve units with --id dc_003, --path <dir>, "
+            "--category \"safe cache\", --safe-only, --rebuildable, or --all-safe. "
+            "(Protected items are never eligible.)")
         return 1
 
     dry = args.dry_run
     total_before = shutil.disk_usage(os.path.expanduser("~"))
-    freed = 0
+    freed_now = 0      # bytes truly reclaimed (direct deletes)
+    trashed = 0        # bytes moved to Trash — only freed once the Trash is emptied
     done, skipped = [], []
-    progress = {"total": len(approved), "completed": 0, "freed": 0,
-                "dry_run": dry, "started_at": now_iso(), "current": ""}
+    progress = {"total": len(approved), "completed": 0, "freed_now": 0,
+                "trashed": 0, "dry_run": dry, "started_at": now_iso(),
+                "current": ""}
     write_progress(progress)
 
     log(f"{'DRY RUN — ' if dry else ''}Cleaning {len(approved)} approved unit(s)...")
     for item in approved:
         path = item["path"]
-        ok, why = validate_target(path, item["action"])
+        ok, why = validate_target(path, item["action"], allowed_roots)
         progress["current"] = path
         if not ok:
             skipped.append({**item, "skipped_reason": why})
@@ -761,9 +816,13 @@ def cmd_clean(args) -> int:
                     dest = None
             else:
                 dest = "(dry-run)"
-            freed += size
+            if verb == "trash":
+                trashed += size
+            else:
+                freed_now += size
             done.append({**item, "freed": size, "verb": verb, "dest": dest})
-            log(f"  ✓ {verb:<6}{human(size):>9}  {path}")
+            label = "→ Trash" if verb == "trash" else "delete"
+            log(f"  ✓ {label:<7}{human(size):>9}  {path}")
             audit({"ts": now_iso(), "action": verb, "path": path, "size": size,
                    "dest": dest, "dry_run": dry, "category": item["category"]})
         except Exception as e:  # noqa: BLE001 — never abort the whole run on one item
@@ -772,7 +831,8 @@ def cmd_clean(args) -> int:
             audit({"ts": now_iso(), "action": "error", "path": path,
                    "size": item["size"], "reason": str(e), "dry_run": dry})
         progress["completed"] += 1
-        progress["freed"] = freed
+        progress["freed_now"] = freed_now
+        progress["trashed"] = trashed
         write_progress(progress)
 
     total_after = shutil.disk_usage(os.path.expanduser("~"))
@@ -783,7 +843,12 @@ def cmd_clean(args) -> int:
         "approved_count": len(approved),
         "cleaned_count": len(done),
         "skipped_count": len(skipped),
-        "estimated_freed": freed,
+        # Honest accounting: deletes free space now; trashed items only free space
+        # once the Trash is emptied (they sit on the same volume until then).
+        "freed_now": freed_now,
+        "moved_to_trash": trashed,
+        "potential_after_empty_trash": freed_now + trashed,
+        "estimated_freed": freed_now,  # back-compat: the truly-reclaimed figure
         "disk_before": {"free": total_before.free, "used": total_before.used,
                         "total": total_before.total},
         "disk_after": {"free": total_after.free, "used": total_after.used,
@@ -800,9 +865,12 @@ def cmd_clean(args) -> int:
     snap = build_snapshot()
 
     log("")
+    verb = "Would free" if dry else "Freed"
     log(f"{'DRY RUN complete. ' if dry else 'Cleanup complete. '}"
-        f"{'Would recover' if dry else 'Recovered'} ~{human(freed)} "
-        f"across {len(done)} unit(s). {len(skipped)} skipped.")
+        f"{verb} ~{human(freed_now)} now"
+        + (f", and moved ~{human(trashed)} to the Trash "
+           f"(frees up once you empty it)." if trashed else ".")
+        + f" {len(done)} cleaned, {len(skipped)} skipped.")
     if snap:
         log(f"Visual report (open in any browser): {snap}")
     return 0
@@ -823,13 +891,19 @@ def cmd_report(args) -> int:
     log(f"Mode:            {'DRY RUN' if report['dry_run'] else 'real cleanup'}")
     log(f"Units cleaned:   {report['cleaned_count']} (of {report['approved_count']} approved)")
     log(f"Units skipped:   {report['skipped_count']}")
-    log(f"Space recovered: ~{human(report['estimated_freed'])}")
+    freed_now = report.get("freed_now", report.get("estimated_freed", 0))
+    trashed = report.get("moved_to_trash", 0)
+    log(f"Freed now:       ~{human(freed_now)}  (space reclaimed immediately)")
+    if trashed:
+        log(f"Moved to Trash:  ~{human(trashed)}  (recoverable; frees space when you empty the Trash)")
+        log(f"Potential total: ~{human(report.get('potential_after_empty_trash', freed_now + trashed))}  (after emptying the Trash)")
     log(f"Free before:     {human(report['disk_before']['free'])}")
     log(f"Free after:      {human(report['disk_after']['free'])}")
     if report["cleaned"]:
         log("\nCleaned:")
         for c in sorted(report["cleaned"], key=lambda x: -x["freed"])[:20]:
-            log(f"  {human(c['freed']):>9}  {c['verb']:<6} {c['category']:<22} {c['path']}")
+            label = "→Trash" if c["verb"] == "trash" else "delete"
+            log(f"  {human(c['freed']):>9}  {label:<6} {c['category']:<22} {c['path']}")
     if report["skipped"]:
         log("\nSkipped (left untouched):")
         for c in report["skipped"][:20]:
@@ -882,6 +956,43 @@ def build_snapshot() -> str | None:
     with open(out, "w") as f:
         f.write(html)
     return out
+
+
+def _sparse(path: str, size: int) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        if size > 0:
+            f.seek(size - 1)
+            f.write(b"\0")  # sparse: apparent size = `size`, real blocks ~0
+
+
+def build_demo() -> str:
+    """Create a harmless fake home tree (sparse files — no real disk used) that
+    exercises every category, so people can try the tool without any risk."""
+    root = state_path("demo-home")
+    if os.path.isdir(root):
+        shutil.rmtree(root, ignore_errors=True)
+    GB = 1024 ** 3
+    MB = 1024 ** 2
+    layout = {
+        "Library/Caches/com.example.app/blob": 1300 * MB,        # safe cache
+        "Library/Logs/system.log": 200 * MB,                     # logs (safe)
+        ".cache/huggingface/models/demo-llm/model.bin": 3 * GB,  # model (redownload)
+        ".ollama/models/blobs/sha256-demo": 2 * GB,              # model (redownload)
+        "project/node_modules/dep/lib.js": 700 * MB,             # build artifacts
+        "Library/Developer/Xcode/DerivedData/App/o.o": 900 * MB, # developer cache
+        "Library/Application Support/Google/Chrome/Default/Cache/data": 600 * MB,  # browser cache
+        "Library/Application Support/Google/Chrome/Default/Cookies": 4 * MB,       # protected
+        "Library/Application Support/Google/Chrome/Default/Service Worker/x.db": 250 * MB,  # NOT cache -> review
+        ".rustup/toolchains/stable/bin/rustc": 800 * MB,         # toolchain -> review
+        "VMs/ubuntu.qcow2": 4 * GB,                              # VM -> review
+        "Downloads/installer.dmg": 1200 * MB,                    # review
+        ".ssh/id_rsa": 4 * 1024,                                 # protected
+        "Documents/thesis.pdf": 300 * MB,                        # protected
+    }
+    for rel, size in layout.items():
+        _sparse(os.path.join(root, rel), size)
+    return root
 
 
 def cmd_snapshot(args) -> int:
@@ -1005,6 +1116,9 @@ def main(argv=None) -> int:
     sp.add_argument("--max-depth", type=int, default=7,
                     help="Maximum directory depth to drill (default 7).")
     sp.add_argument("--json", action="store_true", help="Also print summary JSON.")
+    sp.add_argument("--demo", action="store_true",
+                    help="Scan a harmless built-in fake home (sparse files) so you "
+                         "can try the tool with zero risk to real data.")
     sp.set_defaults(func=cmd_scan)
 
     pp = sub.add_parser("plan", help="Build an approvable cleanup plan from a scan.")
@@ -1012,11 +1126,19 @@ def main(argv=None) -> int:
     pp.set_defaults(func=cmd_plan)
 
     cp = sub.add_parser("clean", help="Clean ONLY approved cleanup units.")
+    cp.add_argument("--id", action="append",
+                    help="Approve a unit by its stable id, e.g. dc_003 (repeatable).")
     cp.add_argument("--path", action="append", help="Approve a specific path (repeatable).")
     cp.add_argument("--category", action="append",
                     help="Approve a whole category, e.g. \"safe cache\" (repeatable).")
+    cp.add_argument("--safe-only", action="store_true",
+                    help="Approve only pure-safe units (temp, logs, app caches) — "
+                         "nothing that costs time/bandwidth to rebuild.")
+    cp.add_argument("--rebuildable", action="store_true",
+                    help="Approve safe-but-rebuildable units (package/build/browser "
+                         "caches, downloaded models). May need re-download/rebuild.")
     cp.add_argument("--all-safe", action="store_true",
-                    help="Approve every safe / safe_redownload unit.")
+                    help="Approve every safe AND rebuildable unit (both of the above).")
     cp.add_argument("--dry-run", action="store_true",
                     help="Show exactly what would happen; delete nothing.")
     cp.set_defaults(func=cmd_clean)

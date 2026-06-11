@@ -96,6 +96,10 @@ Known cache/app locations are used as **hints to label** what was found, never
 as assumptions that an app exists. The measured disk usage leads; the labels
 follow.
 
+If the user just wants to *see how it works* without scanning their real machine,
+run `scan --demo`: it builds a harmless fake home (sparse files, no real disk
+used) that exercises every category, then `serve` shows it on the dashboard.
+
 You can tune a scan when it helps:
 - `--root PATH` (repeatable) — scan a specific area instead of the defaults.
 - `--min-size 500MB` — raise the threshold on a big drive so only large items
@@ -135,30 +139,49 @@ text to a non-technical user.
    recreates automatically." "node_modules" → "downloaded code libraries that
    come back next time you build the project." Never make them parse jargon.
 
-**5. Get approval, concretely.** Offer the safe cleanup as the easy default
-("I can clear about 12 GB of caches and temporary files safely — want me to?"),
-and walk through review items one at a time or in small groups. Let them answer
-in plain language ("yeah do the caches but leave the VM"). Map their words to
-categories or specific paths. If something is ambiguous, ask rather than guess.
+**5. Get approval, concretely.** Lead with the *pure-safe* cleanup as the easy
+default ("I can clear about 12 GB of caches, temp files and logs safely — these
+just come back on their own. Want me to?"). Then treat the *rebuildable* group
+as a **separate, explicit** decision — downloaded AI models, package/toolchain
+caches and build output are safe to remove but cost real time or bandwidth to
+get back, so never lump them in with throwaway caches. Walk through review items
+one at a time or in small groups. Let them answer in plain language ("do the
+caches but leave the models and the VM"). If something is ambiguous, ask rather
+than guess.
 
-**6. Clean only what was approved.** Use `clean` with the matching flags:
-   - `--all-safe` — every safe / safe-to-rebuild unit (good for "just clean the
-     safe stuff").
+   Heads-up worth giving: clearing the cache of an app that's **currently open**
+   (a browser, Docker, an Electron app like Slack/Discord, VS Code) can confuse
+   it until it's restarted. If you're about to clear caches for something the
+   user is clearly using, suggest they quit it first — it's a courtesy, not a
+   hard blocker.
+
+**6. Clean only what was approved.** Use `clean` with the matching flags. Granular
+on purpose — approve exactly what the user agreed to:
+   - `--safe-only` — only pure-safe units (temp, logs, app caches). No rebuild cost.
+   - `--rebuildable` — safe-but-rebuildable units (package/build/browser caches,
+     downloaded models). Offer this *separately* from `--safe-only`.
+   - `--all-safe` — both of the above at once (use only when the user clearly
+     wants everything safe, models included).
+   - `--id dc_003` (repeatable) — a specific unit by its stable id from the plan.
+     Prefer ids over paths when approving individual items: less ambiguity.
    - `--category "browser cache"` (repeatable) — a whole approved category.
-   - `--path /full/path` (repeatable) — a specific approved item.
+   - `--path /full/path` (repeatable) — a specific approved item by path.
    - `--dry-run` — show exactly what would happen and delete nothing. Use this
-     first if the user is anxious or the items are large/irreversible.
+     first whenever the user is anxious or the items are large/irreversible.
 
    The tool re-checks every single target at delete time — confirming it's
-   inside a safe root, not a symlink, not protected, and still classified the
-   way the plan said — and **skips anything that fails**, rather than guessing.
-   Safe caches/temp/logs/builds are deleted directly; everything else approved
-   goes to the Trash.
+   inside a scanned safe root, not a symlink, not protected, and still classified
+   the way the plan said — and **skips anything that fails**, rather than
+   guessing. Safe caches/temp/logs/builds are deleted directly; everything else
+   approved goes to the Trash.
 
-**7. Report.** Run `report` (the dashboard also updates with recovered space).
-Tell the user how much was freed, what went to the Trash (and that they can
-restore it), and what you deliberately left alone. If meaningful space remains
-in review items, you can offer a second pass.
+**7. Report.** Run `report` (the dashboard also updates). Be honest about what
+"recovered" means: the report separates **freed now** (directly deleted —
+genuinely reclaimed) from **moved to Trash** (recoverable, but the space only
+comes back once the user empties the Trash, since it's the same volume). Tell
+them both numbers, what you left alone, and — if they trashed things — that they
+can restore from the Trash or empty it to finish reclaiming the space. If
+meaningful space remains in review items, offer a second pass.
 
 `scan` and `clean` both also write a self-contained `~/.disk-cleaner/report.html`
 (via `snapshot`) — a single file with the data embedded, openable by

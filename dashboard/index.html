@@ -140,9 +140,14 @@ async function render(){
     card("Needs review", "~"+human(est.review), "you decide item by item", RISK_COLORS.review),
   ];
   if(report){
-    const got = report.dry_run ? report.estimated_freed : report.estimated_freed;
-    cards.push(card(report.dry_run?"Would recover":"Recovered",
-      "~"+human(got), report.cleaned_count+" item(s) cleaned", RISK_COLORS.safe));
+    const freedNow = report.freed_now ?? report.estimated_freed ?? 0;
+    const trashed = report.moved_to_trash ?? 0;
+    cards.push(card(report.dry_run?"Would free now":"Freed now",
+      "~"+human(freedNow), report.cleaned_count+" item(s) cleaned", RISK_COLORS.safe));
+    if(trashed){
+      cards.push(card("Moved to Trash", "~"+human(trashed),
+        "frees space when you empty the Trash", RISK_COLORS.review));
+    }
   }
   document.getElementById("cards").innerHTML = cards.join("");
 
@@ -196,9 +201,11 @@ async function render(){
   if(report){
     document.getElementById("reportSection").style.display="block";
     const cleaned = (report.cleaned||[]).slice().sort((a,b)=>b.freed-a.freed);
+    const freedNow = report.freed_now ?? report.estimated_freed ?? 0;
+    const trashed = report.moved_to_trash ?? 0;
     const head = `<div class="row"><div class="cat">${report.dry_run?'Dry run':'Done'}</div>
-      <div class="muted">Recovered ~${human(report.estimated_freed)} · ${report.cleaned_count} cleaned · ${report.skipped_count} skipped</div>
-      <div class="amt">${human(report.estimated_freed)}</div></div>`;
+      <div class="muted">Freed now ~${human(freedNow)}${trashed?` · to Trash ~${human(trashed)} (empties to free)`:''} · ${report.cleaned_count} cleaned · ${report.skipped_count} skipped</div>
+      <div class="amt">${human(freedNow)}</div></div>`;
     const rows = cleaned.slice(0,30).map(c=>`<div class="item">
       <div><div class="name">${c.verb==='trash'?'→ Trash':'Deleted'} <span class="pill ${c.risk}">${c.category}</span></div>
         <div class="path">${c.path}</div></div><div class="sz">${human(c.freed)}</div></div>`).join("");

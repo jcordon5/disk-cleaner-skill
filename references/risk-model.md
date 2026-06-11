@@ -43,11 +43,16 @@ For example, a browser profile folder is protected, but its `Cache` subfolder is
 
 **safe_redownload**
 - `developer cache` — `DerivedData`, `.gradle`, `__pycache__`, `.pytest_cache`,
-  `.mypy_cache`, `.rustup`, and similar tool caches.
+  `.mypy_cache`, and similar tool caches.
 - `package manager cache` — `.m2`, `.cargo`, `.npm`, `.yarn`, `.pnpm-store`,
   `.cocoapods`, `.nuget`, `.ivy2`, etc.
-- `browser cache` — `Cache`/`Code Cache`/`GPUCache`/`cache2` inside a browser's
-  folder (Chrome/Chromium/Firefox/Safari/Edge/Brave/Vivaldi/Opera/Arc).
+- `browser cache` — only the clearly cache-only subdirs inside a browser's folder
+  (`Cache`/`Code Cache`/`GPUCache`/`CacheStorage`/`cache2`/`DawnCache`). The
+  `Service Worker` directory as a whole is **not** treated as cache — it holds
+  offline registrations and IndexedDB-backed state, so it falls to `review`.
+- `downloaded models or generated data` — see below; these are rebuildable but
+  costly, so they're approved separately from throwaway caches (`--rebuildable`,
+  never `--safe-only`).
 - `build artifacts` — `node_modules`, and `build`/`dist`/`target`/`.next`/
   `.nuxt`/`.turbo` inside a project.
 - `downloaded models or generated data` — `huggingface`, `.ollama`, `torch/hub`,
@@ -56,6 +61,11 @@ For example, a browser profile folder is protected, but its `Cache` subfolder is
   many GB.
 
 **review**
+- `developer toolchain / runtime / environment` — `.rustup`, `.pyenv`, `.nvm`,
+  `.rbenv`, `.sdkman`, `.asdf`, conda/miniconda envs, `virtualenvs`, Android SDK,
+  Flutter, etc. These install *real toolchains and runtimes*, not throwaway
+  cache; removing them can break a dev setup, so they need explicit review even
+  though they're technically rebuildable.
 - `virtual machines or containers` — `.vmdk`/`.qcow2`/`.vdi`/`.vhd` images,
   VirtualBox/Parallels/UTM bundles, `.vagrant`, lima/colima, Docker volumes.
 - `games or media` — Steam/Epic/GOG/Battle.net/Minecraft installs; video/audio
@@ -74,8 +84,9 @@ For example, a browser profile folder is protected, but its `Cache` subfolder is
 - Personal data: `Documents`, Mail, Messages, Contacts, Calendars, Photos
   library, Safari history/bookmarks.
 - Cloud sync: iCloud Drive (`Mobile Documents`), `CloudStorage`, Dropbox, Google
-  Drive, OneDrive, Box, pCloud, MEGA — deleting these frees nothing locally and
-  can remove files from the cloud.
+  Drive, OneDrive (including its app/group containers), Box, pCloud, MEGA,
+  Tresorit — deleting these frees nothing locally and can remove files from the
+  cloud or break sync.
 - System areas: `/System`, `/usr`, `/bin`, `/etc`, `/Library`, `/var/db`, etc.
 
 ## Safety backstop at delete time
