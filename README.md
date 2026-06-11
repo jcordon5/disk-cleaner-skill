@@ -132,3 +132,23 @@ disk-cleaner-skill/
 ## License
 
 MIT
+
+## Disclaimer
+
+This software is provided **"as is", without warranty of any kind**. It deletes
+and moves files on your system. While it is designed to be conservative — scan
+first, explicit approval, protected data never touched, review items sent to the
+Trash, and an independent re-check before every deletion — **no safeguard is
+perfect**.
+
+You are solely responsible for deciding what to remove and for verifying the
+results. Always review the dry-run output before any real deletion, and keep
+backups of anything important. The author accepts **no liability** for data loss,
+improperly deleted files, or any damage arising from the use or misuse of this
+skill. By using it, you accept that you do so **at your own risk**.
+
+> _Este software se ofrece "tal cual", sin garantía de ningún tipo. El autor no se
+> hace responsable de la pérdida de datos, del borrado indebido de archivos ni de
+> ningún daño derivado del uso o uso indebido de esta skill. Lo usas bajo tu
+> propia responsabilidad: revisa siempre la simulación (dry-run) antes de borrar
+> y mantén copias de seguridad de lo importante._
